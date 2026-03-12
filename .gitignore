@@ -1,0 +1,17 @@
+# SDR 專案專屬 Ignore 名單
+
+# 排除巨型二進位檔案與音訊範例
+*.wav
+*.iq
+*.raw
+
+# 排除 Python 暫存區與虛擬環境
+__pycache__/
+*.pyc
+.env
+venv/
+env/
+
+# 排除系統暫存檔
+.DS_Store
+Thumbs.db
