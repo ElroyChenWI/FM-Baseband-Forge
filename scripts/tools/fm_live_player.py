@@ -21,6 +21,7 @@ class FMRadioApp:
         self.audio_rate = 44100
         self.center_freq = 94.3e6
         self.gain = 40.0
+        self.volume = 0.5
         self.running = False
         self.data_queue = queue.Queue(maxsize=10)
         
@@ -49,6 +50,11 @@ class FMRadioApp:
         self.gain_var = tk.DoubleVar(value=40.0)
         self.gain_scale = ttk.Scale(ctrl_frame, from_=0, to=49.6, variable=self.gain_var, orient="horizontal", command=self.update_gain)
         self.gain_scale.grid(row=0, column=4, padx=5)
+        
+        ttk.Label(ctrl_frame, text="Vol:").grid(row=0, column=5, padx=5)
+        self.vol_var = tk.DoubleVar(value=0.5)
+        self.vol_scale = ttk.Scale(ctrl_frame, from_=0, to=1.0, variable=self.vol_var, orient="horizontal", command=self.update_vol)
+        self.vol_scale.grid(row=0, column=6, padx=5)
 
         # 頻譜圖區
         self.fig, self.ax = plt.subplots(figsize=(5, 3))
@@ -71,8 +77,13 @@ class FMRadioApp:
             tk.messagebox.showerror("Error", "RTL-SDR not found. Please plug it in.")
 
     def update_gain(self, val):
-        if hasattr(self, 'sdr'):
-            self.sdr.gain = float(val)
+        self.gain = float(val)
+        if hasattr(self, 'sdr') and self.running:
+            try: self.sdr.gain = self.gain
+            except: pass
+
+    def update_vol(self, val):
+        self.volume = float(val)
 
     def toggle_stream(self):
         if not self.running:
@@ -121,21 +132,24 @@ class FMRadioApp:
                 self.deemph_state = last_y
                 audio_de = np.array(audio_de)
 
-                # Resample to 44.1k
-                num_out = int(len(audio_de) * self.audio_rate / self.sample_rate)
-                play_buffer = signal.resample(audio_de, num_out).astype(np.float32)
+                # Faster Resampling (Linear Interpolation)
+                old_indices = np.arange(len(audio_de))
+                new_indices = np.linspace(0, len(audio_de) - 1, int(len(audio_de) * self.audio_rate / self.sample_rate))
+                play_buffer = np.interp(new_indices, old_indices, audio_de).astype(np.float32)
+
+                # Volume control (Max multiplier is 3.0, default 0.5 * 3 = 1.5)
+                play_buffer *= (self.volume * 3.0) 
+                play_buffer = np.clip(play_buffer, -1.0, 1.0)
                 
-                # Audio gain
-                play_buffer *= 2.0 
-                play_buffer = np.clip(play_buffer, -1, 1)
+                # Check for output overflow
+                try:
+                    stream.write(play_buffer)
+                except Exception as e:
+                    print(f"Audio Output Error: {e}")
                 
-                stream.write(play_buffer)
-                
-                # Push to GUI Queue
-                if self.data_queue.full():
-                    try: self.data_queue.get_nowait()
-                    except: pass
-                self.data_queue.put(samples)
+                # Push to GUI Queue (Skip if GUI is slow)
+                if self.data_queue.empty():
+                    self.data_queue.put(samples)
                 
         except Exception as e:
             print(f"Worker Error: {e}")
