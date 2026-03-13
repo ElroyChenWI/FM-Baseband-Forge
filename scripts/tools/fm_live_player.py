@@ -1,3 +1,8 @@
+"""
+FM Live Player - GNU Radio Standard Architecture
+DSP Chain: IQ(250k) -> LPF+Decimate(50k) -> FM Demod -> LPF 15k -> De-emphasis -> Resample(48k) -> Audio
+Reference: GNU Radio FM Receiver, rtl_fm
+"""
 import numpy as np
 import scipy.signal as signal
 from rtlsdr import RtlSdr
@@ -6,175 +11,219 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import queue
-import time
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+FS_IN      = 1_140_000   # SDR sample rate (rtl_fm default: 1.14 MSPS)
+FS_FM      = 228_000     # After 5x decimate (FM demod rate)
+FS_AUDIO   = 48_000      # Output audio rate
+DECIMATE_1 = 5           # FS_IN -> FS_FM
+DECIMATE_2 = FS_FM // FS_AUDIO   # FS_FM -> FS_AUDIO = 4.75 -> use resample
+
+class FMReceiver:
+    """GNU Radio style FM receive chain."""
+
+    def __init__(self):
+        # Stage 1: Anti-alias LPF before decimation (100kHz cutoff)
+        self.lpf1_taps = signal.firwin(128, 100_000 / (FS_IN / 2))
+        self.lpf1_state = np.zeros(len(self.lpf1_taps) - 1, dtype=complex)
+
+        # Stage 2: Audio LPF after demod (15kHz cutoff, standard voice+music)
+        self.lpf2_taps = signal.firwin(64, 15_000 / (FS_FM / 2))
+        self.lpf2_state = np.zeros(len(self.lpf2_taps) - 1)
+
+        # Stage 3: De-emphasis IIR (50us for Asia/Europe, 75us for US)
+        # H(z) = (1-alpha) / (1 - alpha*z^-1), alpha = exp(-1/(fs*tau))
+        tau = 50e-6
+        alpha = np.exp(-1.0 / (FS_FM * tau))
+        self.deemph_b = np.array([1 - alpha])
+        self.deemph_a = np.array([1, -alpha])
+        self.deemph_zi = np.array([0.0])
+
+        # Stage 4: AGC
+        self.agc_ref   = 0.5
+        self.agc_gain  = 1.0
+        self.agc_decay = 0.99
+
+    def process(self, iq_samples: np.ndarray, vol: float) -> np.ndarray:
+        # --- Stage 1: Anti-alias LPF + Decimate 5x ---
+        iq_lpf, self.lpf1_state = signal.lfilter(self.lpf1_taps, 1.0, iq_samples, zi=self.lpf1_state)
+        iq_dec = iq_lpf[::DECIMATE_1]                     # 1.14M -> 228k
+
+        # --- Stage 2: FM Discriminator (standard arctan differentiator) ---
+        diff = iq_dec[1:] * np.conj(iq_dec[:-1])
+        fm   = np.angle(diff)                             # unit: radians/sample
+
+        # Normalize by fs/2pi to get Hz: fm_hz = fm * (FS_FM / (2*pi))
+        # But for audio, we just need relative amplitude, skip constant factor.
+
+        # --- Stage 3: Audio LPF (0-15kHz) ---
+        audio_lpf, self.lpf2_state = signal.lfilter(self.lpf2_taps, 1.0, fm, zi=self.lpf2_state)
+
+        # --- Stage 4: De-emphasis (IIR, scipy lfilter is vectorized/fast) ---
+        audio_de, self.deemph_zi = signal.lfilter(self.deemph_b, self.deemph_a, audio_lpf, zi=self.deemph_zi)
+
+        # --- Stage 5: Resample 228k -> 48k ---
+        # Use polyphase for speed (scipy.signal.resample_poly)
+        audio_out = signal.resample_poly(audio_de, FS_AUDIO, FS_FM)
+
+        # --- Stage 6: AGC (slow attack, fast decay) ---
+        peak = np.max(np.abs(audio_out)) + 1e-9
+        if peak * self.agc_gain > self.agc_ref:
+            self.agc_gain = self.agc_ref / peak  # fast attack
+        else:
+            self.agc_gain = self.agc_gain * self.agc_decay + (self.agc_ref / peak) * (1 - self.agc_decay)  # slow recovery
+        audio_out *= self.agc_gain
+
+        # --- Stage 7: Volume + safety clip ---
+        audio_out = np.clip(audio_out * vol, -1.0, 1.0)
+
+        return audio_out.astype(np.float32)
+
 
 class FMRadioApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("FM Baseband Forge - Real-time Player")
-        self.root.geometry("800x600")
-        
-        # 參數設定
-        self.sample_rate = 250000
-        self.audio_rate = 44100
-        self.center_freq = 94.3e6
-        self.gain = 40.0
-        self.volume = 0.5
-        self.running = False
-        self.data_queue = queue.Queue(maxsize=10)
-        
-        # DSP 狀態
-        self.prev_iq = 0
-        self.deemph_state = 0
-        self.deemph_alpha = 1 - np.exp(-1 / (self.sample_rate * 50e-6))
-        
-        self.setup_ui()
-        self.init_sdr()
+        self.root.title("FM Baseband Forge - Live Radio")
+        self.root.geometry("820x550")
+        self.root.configure(bg="#1a1a2e")
 
-    def setup_ui(self):
-        # 控制區
-        ctrl_frame = ttk.LabelFrame(self.root, text="Controls")
-        ctrl_frame.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(ctrl_frame, text="Frequency (MHz):").grid(row=0, column=0, padx=5)
+        self.freq_mhz = 94.3
+        self.sdr_gain = 30.0
+        self.volume   = 0.8
+        self.running  = False
+        self.iq_queue  = queue.Queue(maxsize=4)
+        self.dsp_queue = queue.Queue(maxsize=4)
+
+        self.receiver = FMReceiver()
+        self._setup_ui()
+
+    def _setup_ui(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TLabel", background="#1a1a2e", foreground="#e0e0e0", font=("Consolas", 10))
+        style.configure("TButton", background="#16213e", foreground="#00d2ff", font=("Consolas", 10, "bold"))
+        style.configure("TScale", background="#1a1a2e")
+        style.configure("TLabelframe", background="#1a1a2e", foreground="#00d2ff")
+        style.configure("TLabelframe.Label", background="#1a1a2e", foreground="#00d2ff")
+
+        ctrl = ttk.LabelFrame(self.root, text="CONTROL PANEL")
+        ctrl.pack(fill="x", padx=12, pady=6)
+
+        ttk.Label(ctrl, text="Frequency (MHz)").grid(row=0, column=0, padx=8, pady=4)
         self.freq_var = tk.DoubleVar(value=94.3)
-        self.freq_entry = ttk.Entry(ctrl_frame, textvariable=self.freq_var, width=8)
-        self.freq_entry.grid(row=0, column=1, padx=5)
-        
-        self.btn_toggle = ttk.Button(ctrl_frame, text="START", command=self.toggle_stream)
-        self.btn_toggle.grid(row=0, column=2, padx=10)
-        
-        ttk.Label(ctrl_frame, text="Gain:").grid(row=0, column=3, padx=5)
-        self.gain_var = tk.DoubleVar(value=40.0)
-        self.gain_scale = ttk.Scale(ctrl_frame, from_=0, to=49.6, variable=self.gain_var, orient="horizontal", command=self.update_gain)
-        self.gain_scale.grid(row=0, column=4, padx=5)
-        
-        ttk.Label(ctrl_frame, text="Vol:").grid(row=0, column=5, padx=5)
-        self.vol_var = tk.DoubleVar(value=0.5)
-        self.vol_scale = ttk.Scale(ctrl_frame, from_=0, to=1.0, variable=self.vol_var, orient="horizontal", command=self.update_vol)
-        self.vol_scale.grid(row=0, column=6, padx=5)
+        ttk.Entry(ctrl, textvariable=self.freq_var, width=8, font=("Consolas", 11)).grid(row=0, column=1, padx=4)
 
-        # 頻譜圖區
-        self.fig, self.ax = plt.subplots(figsize=(5, 3))
-        self.ax.set_facecolor('black')
-        self.line, = self.ax.plot([], [], color='#00FF00', lw=1)
-        self.ax.set_ylim(-60, 20)
-        self.ax.set_xlim(-125, 125) # 250kHz range
-        self.ax.set_title("Real-time Baseband Spectrum", color='white')
-        
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=5)
+        self.btn = ttk.Button(ctrl, text="[ START  ]", command=self._toggle)
+        self.btn.grid(row=0, column=2, padx=14)
 
-    def init_sdr(self):
+        ttk.Label(ctrl, text="RF Gain (dB)").grid(row=0, column=3, padx=8)
+        self.gain_var = tk.DoubleVar(value=30.0)
+        ttk.Scale(ctrl, from_=0, to=49.6, variable=self.gain_var, orient="horizontal", length=120, command=lambda v: setattr(self, 'sdr_gain', float(v))).grid(row=0, column=4, padx=4)
+        self.gain_label = ttk.Label(ctrl, text="30 dB")
+        self.gain_label.grid(row=0, column=5)
+
+        ttk.Label(ctrl, text="Volume").grid(row=0, column=6, padx=8)
+        self.vol_var = tk.DoubleVar(value=0.8)
+        ttk.Scale(ctrl, from_=0.0, to=1.5, variable=self.vol_var, orient="horizontal", length=100, command=lambda v: setattr(self, 'volume', float(v))).grid(row=0, column=7, padx=4)
+
+        # Spectrum Plot
+        self.fig = plt.Figure(figsize=(8, 3), facecolor="#0d0d1a")
+        self.ax  = self.fig.add_subplot(111)
+        self.ax.set_facecolor("#0d0d1a")
+        self.ax.tick_params(colors="#888888")
+        for spine in self.ax.spines.values(): spine.set_edgecolor("#333")
+        self.line, = self.ax.plot([], [], color="#00d2ff", lw=0.8)
+        self.ax.set_ylim(-80, 10)
+        self.ax.set_xlim(-FS_IN/2000, FS_IN/2000)
+        self.ax.set_xlabel("kHz", color="#888")
+        self.ax.set_ylabel("dBFS", color="#888")
+        self.ax.set_title(f"Baseband Spectrum | -- MHz", color="#cccccc")
+        canvas = FigureCanvasTkAgg(self.fig, master=self.root)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=4)
+        self.canvas = canvas
+
+        self.status_var = tk.StringVar(value="Ready. Plug in RTL-SDR and press START.")
+        ttk.Label(self.root, textvariable=self.status_var, font=("Consolas", 9)).pack(pady=2)
+
+    def _toggle(self):
+        if not self.running:
+            self._start()
+        else:
+            self._stop()
+
+    def _start(self):
         try:
             self.sdr = RtlSdr()
-            self.sdr.sample_rate = self.sample_rate
-            self.sdr.gain = self.gain
+            self.sdr.sample_rate = FS_IN
+            self.sdr.center_freq = self.freq_var.get() * 1e6
+            self.sdr.gain = self.sdr_gain
         except Exception as e:
-            print(f"Error: SDR not found. {e}")
-            tk.messagebox.showerror("Error", "RTL-SDR not found. Please plug it in.")
+            self.status_var.set(f"ERROR: {e}  ->  Unplug + re-plug SDR, then retry.")
+            return
 
-    def update_gain(self, val):
-        self.gain = float(val)
-        if hasattr(self, 'sdr') and self.running:
-            try: self.sdr.gain = self.gain
+        self.running = True
+        self.btn.config(text="[ STOP   ]")
+        self.receiver = FMReceiver()  # reset DSP state on new stream
+
+        threading.Thread(target=self._sdr_thread,   daemon=True).start()
+        threading.Thread(target=self._audio_thread, daemon=True).start()
+        self._gui_loop()
+
+    def _stop(self):
+        self.running = False
+        self.btn.config(text="[ START  ]")
+        self.status_var.set("Stopped.")
+        if hasattr(self, 'sdr'):
+            try: self.sdr.close()
             except: pass
 
-    def update_vol(self, val):
-        self.volume = float(val)
+    def _sdr_thread(self):
+        CHUNK = FS_IN // 4   # 0.25s per chunk
+        while self.running:
+            try:
+                self.sdr.gain = self.sdr_gain  # live gain update
+                samples = self.sdr.read_samples(CHUNK)
+                if not self.iq_queue.full():
+                    self.iq_queue.put(samples)
+            except Exception as e:
+                self.status_var.set(f"SDR Error: {e}")
+                self._stop(); break
 
-    def toggle_stream(self):
-        if not self.running:
-            self.running = True
-            self.btn_toggle.config(text="STOP")
-            self.center_freq = self.freq_var.get() * 1e6
-            self.sdr.center_freq = self.center_freq
-            
-            # 啟動處理執行緒
-            self.worker_thread = threading.Thread(target=self.audio_worker, daemon=True)
-            self.worker_thread.start()
-            self.gui_update_loop()
-        else:
-            self.running = False
-            self.btn_toggle.config(text="START")
-
-    def audio_worker(self):
-        # 15kHz 低通濾波器設計 (更專業的音質)
-        nyq = self.sample_rate / 2
-        lpf_taps = signal.firwin(101, 15000.0/nyq)
-        lpf_state = np.zeros(len(lpf_taps) - 1)
-
-        stream = sd.OutputStream(samplerate=self.audio_rate, channels=1)
-        stream.start()
-        
-        chunk_size = 32768 # 增加緩衝區大小
-        try:
+    def _audio_thread(self):
+        with sd.OutputStream(samplerate=FS_AUDIO, channels=1, blocksize=0, dtype='float32') as stream:
             while self.running:
-                samples = self.sdr.read_samples(chunk_size)
-                
-                # DSP: FM Demodulation
-                angle = np.angle(samples[1:] * np.conj(samples[:-1]))
-                
-                # DSP: 15kHz LPF & De-emphasis
-                audio_lpf, lpf_state = signal.lfilter(lpf_taps, 1.0, angle, zi=lpf_state)
-                
-                # Simple De-emphasis (50us)
-                # y[n] = x[n]*alpha + y[n-1]*(1-alpha)
-                # alpha 已經在 __init__ 計算過
-                audio_de = []
-                last_y = self.deemph_state
-                for x in audio_lpf:
-                    y = x * self.deemph_alpha + last_y * (1 - self.deemph_alpha)
-                    audio_de.append(y)
-                    last_y = y
-                self.deemph_state = last_y
-                audio_de = np.array(audio_de)
-
-                # Faster Resampling (Linear Interpolation)
-                old_indices = np.arange(len(audio_de))
-                new_indices = np.linspace(0, len(audio_de) - 1, int(len(audio_de) * self.audio_rate / self.sample_rate))
-                play_buffer = np.interp(new_indices, old_indices, audio_de).astype(np.float32)
-
-                # Volume control (Max multiplier is 3.0, default 0.5 * 3 = 1.5)
-                play_buffer *= (self.volume * 3.0) 
-                play_buffer = np.clip(play_buffer, -1.0, 1.0)
-                
-                # Check for output overflow
                 try:
-                    stream.write(play_buffer)
+                    iq = self.iq_queue.get(timeout=1.0)
+                    audio = self.receiver.process(iq, self.volume)
+                    stream.write(audio)
+                    if not self.dsp_queue.full():
+                        self.dsp_queue.put(iq)
+                except queue.Empty:
+                    continue
                 except Exception as e:
-                    print(f"Audio Output Error: {e}")
-                
-                # Push to GUI Queue (Skip if GUI is slow)
-                if self.data_queue.empty():
-                    self.data_queue.put(samples)
-                
-        except Exception as e:
-            print(f"Worker Error: {e}")
-        finally:
-            stream.stop()
-            stream.close()
+                    print(f"Audio error: {e}")
 
-    def gui_update_loop(self):
+    def _gui_loop(self):
         if not self.running: return
-        
         try:
-            samples = self.data_queue.get_nowait()
-            psd = 10 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(samples)))**2 / len(samples))
-            freqs = np.linspace(-self.sample_rate/2000, self.sample_rate/2000, len(psd))
-            
+            iq = self.dsp_queue.get_nowait()
+            psd = 10 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(iq, 2048)))**2 / 2048 + 1e-12)
+            freqs = np.linspace(-FS_IN/2000, FS_IN/2000, 2048)
             self.line.set_data(freqs, psd)
+            freq_mhz = self.freq_var.get()
+            self.ax.set_title(f"Baseband Spectrum | {freq_mhz:.1f} MHz  |  Gain: {self.sdr_gain:.0f} dB", color="#cccccc")
+            self.gain_label.config(text=f"{self.sdr_gain:.0f} dB")
             self.canvas.draw_idle()
         except queue.Empty:
             pass
-            
-        self.root.after(50, self.gui_update_loop)
+        self.root.after(80, self._gui_loop)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = FMRadioApp(root)
+    app  = FMRadioApp(root)
+    root.protocol("WM_DELETE_WINDOW", lambda: (app._stop(), root.destroy()))
     root.mainloop()
-    if hasattr(app, 'sdr'):
-        app.sdr.close()
