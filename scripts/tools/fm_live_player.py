@@ -94,8 +94,10 @@ class FMRadioApp:
         self.sdr_gain = 30.0
         self.volume   = 0.8
         self.running  = False
-        self.iq_queue  = queue.Queue(maxsize=4)
-        self.dsp_queue = queue.Queue(maxsize=4)
+        # Three separate queues: SDR -> DSP -> Audio
+        self.iq_queue    = queue.Queue(maxsize=8)   # raw IQ
+        self.audio_queue = queue.Queue(maxsize=16)  # processed float32 audio
+        self.spec_queue  = queue.Queue(maxsize=2)   # for spectrum display only
 
         self.receiver = FMReceiver()
         self._setup_ui()
@@ -168,8 +170,10 @@ class FMRadioApp:
         self.btn.config(text="[ STOP   ]")
         self.receiver = FMReceiver()  # reset DSP state on new stream
 
-        threading.Thread(target=self._sdr_thread,   daemon=True).start()
-        threading.Thread(target=self._audio_thread, daemon=True).start()
+        # Launch 3 dedicated threads: SDR read / DSP process / Audio output
+        threading.Thread(target=self._sdr_thread,   daemon=True, name="SDR").start()
+        threading.Thread(target=self._dsp_thread,   daemon=True, name="DSP").start()
+        threading.Thread(target=self._audio_thread, daemon=True, name="Audio").start()
         self._gui_loop()
 
     def _stop(self):
@@ -181,35 +185,56 @@ class FMRadioApp:
             except: pass
 
     def _sdr_thread(self):
-        CHUNK = FS_IN // 4   # 0.25s per chunk
+        # Small chunk = low latency. 0.05s per read at 1.14 MSPS
+        CHUNK = int(FS_IN * 0.05)
         while self.running:
             try:
-                self.sdr.gain = self.sdr_gain  # live gain update
+                self.sdr.gain = self.sdr_gain
                 samples = self.sdr.read_samples(CHUNK)
-                if not self.iq_queue.full():
-                    self.iq_queue.put(samples)
+                # If IQ queue is full, drop oldest. Never block SDR reads.
+                if self.iq_queue.full():
+                    try: self.iq_queue.get_nowait()
+                    except: pass
+                self.iq_queue.put(samples)
             except Exception as e:
                 self.status_var.set(f"SDR Error: {e}")
                 self._stop(); break
 
+    def _dsp_thread(self):
+        # Only responsibility: read IQ, apply DSP chain, push audio frames
+        while self.running:
+            try:
+                iq = self.iq_queue.get(timeout=0.5)
+                audio = self.receiver.process(iq, self.volume)
+                # Push to audio queue. Do not drop audio frames or we get glitches.
+                self.audio_queue.put(audio)  # blocks if full (backpressure)
+                # Push IQ snapshot for spectrum (best-effort, drops ok)
+                if self.spec_queue.empty():
+                    self.spec_queue.put(iq)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"DSP error: {e}")
+
     def _audio_thread(self):
-        with sd.OutputStream(samplerate=FS_AUDIO, channels=1, blocksize=0, dtype='float32') as stream:
+        # Only responsibility: drain audio queue and write to sounddevice.
+        # NO computation here whatsoever.
+        with sd.OutputStream(samplerate=FS_AUDIO, channels=1, blocksize=2048,
+                             latency='low', dtype='float32') as stream:
             while self.running:
                 try:
-                    iq = self.iq_queue.get(timeout=1.0)
-                    audio = self.receiver.process(iq, self.volume)
-                    stream.write(audio)
-                    if not self.dsp_queue.full():
-                        self.dsp_queue.put(iq)
+                    audio_chunk = self.audio_queue.get(timeout=0.5)
+                    stream.write(audio_chunk)
                 except queue.Empty:
-                    continue
+                    # Write silence to prevent sounddevice underrun
+                    stream.write(np.zeros(2048, dtype='float32'))
                 except Exception as e:
-                    print(f"Audio error: {e}")
+                    print(f"Audio write error: {e}")
 
     def _gui_loop(self):
         if not self.running: return
         try:
-            iq = self.dsp_queue.get_nowait()
+            iq = self.spec_queue.get_nowait()
             psd = 10 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(iq, 2048)))**2 / 2048 + 1e-12)
             freqs = np.linspace(-FS_IN/2000, FS_IN/2000, 2048)
             self.line.set_data(freqs, psd)
@@ -219,7 +244,7 @@ class FMRadioApp:
             self.canvas.draw_idle()
         except queue.Empty:
             pass
-        self.root.after(80, self._gui_loop)
+        self.root.after(100, self._gui_loop)  # 10 fps is enough for spectrum
 
 
 if __name__ == "__main__":
