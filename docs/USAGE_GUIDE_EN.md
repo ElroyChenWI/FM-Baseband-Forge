@@ -27,7 +27,7 @@ The first task is to identify the strongest FM station in your local environment
 Use `fm_profiler.py` to scan the 88-108 MHz band.
 Command:
 ```powershell
-python scripts/tools/fm_profiler.py
+python 1_rf_reconnaissance/fm_profiler.py
 ```
 **Expected Outcome:** The script will generate a spectrum energy graph. Note down the frequency with the highest peak (e.g., 94.3 MHz).
 
@@ -40,14 +40,14 @@ Once a frequency is selected, we begin deconstructing the analog audio component
 ### Extract Harmonics (19k/38k/57k)
 Command:
 ```powershell
-python scripts/tools/extract_harmonics.py
+python 4_spectrum_analytics/extract_harmonics.py
 ```
 This script isolates the 19kHz Pilot Tone, 38kHz Stereo Difference (L-R), and 57kHz RDS data layer to verify the broadcast's spectral topology.
 
 ### Stereo Recovery & De-emphasis Experiment
 Command:
 ```powershell
-python scripts/tools/fm_master_comparison.py
+python 3_analog_demodulation/fm_master_comparison.py
 ```
 This generates four comparative audio files for the target frequency:
 1. Mono (Raw)
@@ -65,7 +65,7 @@ Finally, attempt to extract digital text information from the baseband signal.
 ### Run the Final RDS Decoder
 Command:
 ```powershell
-python scripts/tools/rds_final_decoder.py
+python 5_digital_protocol_decoder/rds_final_decoder.py
 ```
 This script initializes the four-stage digital signal processing (DSP) pipeline:
 1. **Costas Loop**: Recovers carrier phase.

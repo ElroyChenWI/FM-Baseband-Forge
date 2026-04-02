@@ -27,7 +27,7 @@ pip install pyrtlsdr pyrtlsdrlib numpy scipy matplotlib
 使用 `fm_profiler.py` 掃描 88-108 MHz 頻段。
 指令：
 ```powershell
-python scripts/tools/fm_profiler.py
+python 1_rf_reconnaissance/fm_profiler.py
 ```
 **預期結果：** 程式會產出頻譜能量圖。請記下能量最高點的頻率（例如 94.3 MHz）。
 
@@ -40,14 +40,14 @@ python scripts/tools/fm_profiler.py
 ### 提取 19kHz/38kHz/57kHz 組件
 指令：
 ```powershell
-python scripts/tools/extract_harmonics.py
+python 4_spectrum_analytics/extract_harmonics.py
 ```
 這會分離出 19kHz 導頻、38kHz 立體聲差分訊號以及 57kHz RDS 資料層，並初步驗證電台的發射完整度。
 
 ### 立體聲與去加重 (De-emphasis) 實驗
 指令：
 ```powershell
-python scripts/tools/fm_master_comparison.py
+python 3_analog_demodulation/fm_master_comparison.py
 ```
 這會針對目標頻率產生四種對比音訊：
 1. Mono (原始)
@@ -65,7 +65,7 @@ python scripts/tools/fm_master_comparison.py
 ### 執行最終解碼器
 指令：
 ```powershell
-python scripts/tools/rds_final_decoder.py
+python 5_digital_protocol_decoder/rds_final_decoder.py
 ```
 此步驟會啟動「四階段 DSP 管線」：
 1. **Costas Loop**：鎖定載波相位。

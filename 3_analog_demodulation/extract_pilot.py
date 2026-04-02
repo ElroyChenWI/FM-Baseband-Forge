@@ -80,12 +80,12 @@ def apply_de_emphasis(data, fs, tau=50e-6):
 audio_left = apply_de_emphasis(audio_left, FS_BASEBAND)
 audio_right = apply_de_emphasis(audio_right, FS_BASEBAND)
 
-print("[存檔層] 正在將結果寫入 data/samples/stereo_separation.wav...")
+print("[存檔層] 正在將結果寫入 ../data/samples/stereo_separation.wav...")
 stereo_output = np.vstack((audio_left, audio_right)).T
 stereo_output /= np.max(np.abs(stereo_output)) + 1e-12
 stereo_output = (stereo_output * 32767).astype(np.int16)
 
-os.makedirs('data/samples', exist_ok=True)
-wavfile.write('data/samples/stereo_separation.wav', int(FS_BASEBAND), stereo_output)
+os.makedirs('../data/samples', exist_ok=True)
+wavfile.write('../data/samples/stereo_separation.wav', int(FS_BASEBAND), stereo_output)
 
 print("恭喜！你現在可以播放 data/samples/stereo_separation.wav 聽聽看分離效果了！")

@@ -33,5 +33,5 @@ def record_samples(freq_mhz, duration_sec, output_file, sample_rate=2.048e6, gai
 if __name__ == "__main__":
     DEFAULT_FREQ = 467.6250
     DEFAULT_DURATION = 3.0
-    DEFAULT_PATH = "data/samples/security_ch10_iq.bin"
+    DEFAULT_PATH = "../data/samples/security_ch10_iq.bin"
     record_samples(DEFAULT_FREQ, DEFAULT_DURATION, DEFAULT_PATH)

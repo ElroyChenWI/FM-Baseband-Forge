@@ -45,7 +45,7 @@ def de_emphasis(data, fs, tau=50e-6):
     alpha = 1 / (tau * fs + 1)
     return signal.lfilter([alpha], [1, -(1 - alpha)], data)
 
-os.makedirs('data/comparison', exist_ok=True)
+os.makedirs('../data/comparison', exist_ok=True)
 
 def save_wav(name, left_ch, right_ch=None):
     print(f"💾 正在產出: {name}...")
@@ -55,7 +55,7 @@ def save_wav(name, left_ch, right_ch=None):
         out = np.vstack((left_ch, right_ch)).T
     out /= np.max(np.abs(out)) + 1e-12
     out = (out * 32767).astype(np.int16)
-    wavfile.write(f'data/comparison/{name}', FS_BASEBAND, out)
+    wavfile.write(f'../data/comparison/{name}', FS_BASEBAND, out)
 
 save_wav('1_mono_no_deemph.wav', audio_mono_raw)
 

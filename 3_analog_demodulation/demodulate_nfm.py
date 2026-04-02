@@ -31,8 +31,8 @@ def demodulate_nfm(input_bin, output_wav, sample_rate=2.048e6, decimation=16):
     print(f"最終採樣率: {new_fs} Hz")
 
 if __name__ == "__main__":
-    BIN_FILE = "data/samples/security_ch10_iq.bin"
-    WAV_FILE = "data/samples/security_ch10_audio.wav"
+    BIN_FILE = "../data/samples/security_ch10_iq.bin"
+    WAV_FILE = "../data/samples/security_ch10_audio.wav"
     if os.path.exists(BIN_FILE):
         demodulate_nfm(BIN_FILE, WAV_FILE)
     else:
