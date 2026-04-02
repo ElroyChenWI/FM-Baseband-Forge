@@ -68,3 +68,4 @@ BasebandForge/
 Refer to the [Usage Guide (EN)](docs/USAGE_GUIDE_EN.md) or [使用指南 (ZH)](docs/USAGE_GUIDE_ZH.md) for detailed instructions on how to run these modules.
 
 <img width="1200" height="1000" alt="image" src="https://github.com/user-attachments/assets/f7486b2e-41ad-403d-a699-ea7dfd7d7563" />
+Fig 1. Time-domain extraction of MPX subcarriers. Demonstrating surgical isolation of the 19kHz pilot tone, the DSB-SC envelope of the 38kHz stereo difference signal, and the physical phase reversals of the 57kHz RDS BPSK data stream.
