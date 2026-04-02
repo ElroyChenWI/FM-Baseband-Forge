@@ -3,30 +3,35 @@ import scipy.signal as signal
 from rtlsdr import RtlSdr
 from collections import Counter
 
-FS_RF = 250000
+FS_SDR = 2.4e6
+DECIMATION = 10
+FS_MPX = FS_SDR / DECIMATION
 FREQ = 94.3e6
 DURATION = 8.0
-SEGMENT_LEN = int(FS_RF * 0.5)
+SEGMENT_DURATION = 0.5
+SEGMENT_LEN = int(FS_SDR * SEGMENT_DURATION)
 
-print(f"📡 [硬體層] 正在攔截 {FREQ/1e6} MHz (8秒)... 請保持天線穩定。")
+print(f"📡 [硬體層] 正在攔截 {FREQ/1e6} MHz (使用 2.4 MSPS 過採樣提升 SNR)...")
 sdr = RtlSdr()
-sdr.sample_rate = FS_RF
+sdr.sample_rate = FS_SDR
 sdr.center_freq = FREQ
 sdr.gain = 49.6
 
 all_samples = []
-for _ in range(int(DURATION / 0.5)):
+for _ in range(int(DURATION / SEGMENT_DURATION)):
     all_samples.extend(sdr.read_samples(SEGMENT_LEN))
 sdr.close()
 
-mpx = np.angle(np.array(all_samples)[1:] * np.array(all_samples)[:-1].conj())
+print("🧠 [DSP層] 執行 10x 降頻與 MPX 解調...")
+iq_clean = signal.decimate(np.array(all_samples), DECIMATION, ftype='fir')
+mpx = np.angle(iq_clean[1:] * iq_clean[:-1].conj())
 
-NYQ = FS_RF / 2
+NYQ = FS_MPX / 2
 bpf_taps = signal.firwin(961, [56500.0/NYQ, 57500.0/NYQ], pass_zero=False)
 rds_raw = signal.lfilter(bpf_taps, 1.0, mpx)
 
 print("💡 [同步層] 位元相位掃描中...")
-samples_per_bit = FS_RF / 1187.5
+samples_per_bit = FS_MPX / 1187.5
 num_samples = len(rds_raw)
 
 def calc_syndrome(vector):

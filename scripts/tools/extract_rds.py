@@ -16,7 +16,7 @@ iq_raw = sdr.read_samples(int(FS_RF * DURATION))
 sdr.close()
 
 print("🧠 [DSP層] 執行 57kHz 數位載波鎖定...")
-DECIMATION = 8
+DECIMATION = 10
 FS_BASEBAND = FS_RF / DECIMATION
 iq_baseband = signal.decimate(iq_raw, DECIMATION, ftype='fir')
 fm_demodulated = np.angle(iq_baseband[1:] * iq_baseband[:-1].conj())

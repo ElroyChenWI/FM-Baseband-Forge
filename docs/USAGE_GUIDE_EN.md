@@ -70,7 +70,7 @@ python scripts/tools/rds_final_decoder.py
 This script initializes the four-stage digital signal processing (DSP) pipeline:
 1. **Costas Loop**: Recovers carrier phase.
 2. **Bit-Sync**: Aligns bit-sampling timing.
-3. **Differential Decode**: Reverses the NRI differential encoding.
+3. **Differential Decode**: Reverses the differential encoding.
 4. **Frame Sync (Syndrome)**: Locks the 26-bit block boundaries.
 
 **Debugging Tips:**

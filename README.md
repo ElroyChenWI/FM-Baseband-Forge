@@ -8,7 +8,4 @@ Core Architectural Highlights:
 * Analog Demodulation: Features software phase-locked loops (Costas Loop/DPLL) for 19kHz pilot tone recovery and DSB-SC stereo matrixing.
 * Digital Protocol Extraction: Executes differential BPSK decoding and CRC-10 syndrome validation to extract Radio Data System (RDS) frames from noisy RF environments.
 
-
-
 <img width="1200" height="1000" alt="image" src="https://github.com/user-attachments/assets/f7486b2e-41ad-403d-a699-ea7dfd7d7563" />
-
