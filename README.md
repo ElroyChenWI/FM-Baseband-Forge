@@ -31,6 +31,25 @@ The final digital stage transforming analog waveforms into human-readable data. 
 
 ---
 
+## Showcase: The SDR Evolution
+
+Want to see (and hear) the power of DSP in action? Experience the transformation from raw electromagnetic noise to high-fidelity stereo through our 4-stage evolution script.
+
+### [Run the Evolution Pipeline](file:///d:/Elroy/%E5%80%8B%E4%BA%BA%E8%88%88%E8%B6%A3%E8%88%87%E7%A0%94%E7%A9%B6/SDR/3_analog_demodulation/step_by_step_evolution.py)
+```powershell
+python 3_analog_demodulation/step_by_step_evolution.py
+```
+
+**What happens?**
+1. **Stage 0: Raw Chaos** - Listen to the unmodified RF capture (100% noise).
+2. **Stage 1: Mono Whisper** - The first signs of audio emerge through FM demodulation.
+3. **Stage 2: Warmth Refined** - High-frequency hiss is removed via 50μs de-emphasis.
+4. **Stage 3: Stereo Emergence** - The soundstage expands as the 19kHz pilot tone unlocks the L-R difference.
+
+Outputs are saved in `data/evolution/` with a comparative spectral analysis map.
+
+---
+
 ## Project Structure
 
 ```text
